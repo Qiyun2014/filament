@@ -561,6 +561,7 @@ const cgltf_data* Pipeline::flattenPrims(const cgltf_data* sourceAsset, uint32_t
         nodes[primIndex] = {
             .name = bakedPrim.sourceNode->name,
             .mesh = meshes + primIndex,
+            .scale = {1.0f, 1.0f, 1.0f},
         };
 
         meshes[primIndex] = {

@@ -97,9 +97,10 @@ struct App {
     MaterialInstance* overlayMaterial = nullptr;
     utils::Entity overlayEntity;
     AppState pushedState;
-    gltfio::AssetPipeline* pipeline;
     uint32_t bakeResolution = 1024;
     ExportOption exportOption = PRESERVE_MATERIALS;
+    gltfio::AssetPipeline* flattener = nullptr;
+    gltfio::AssetPipeline* baker = nullptr;
 
     // Secondary threads might write to the following fields.
     std::shared_ptr<std::string> statusText;
@@ -302,30 +303,26 @@ static void loadAsset(App& app) {
         exit(1);
     }
 
-    // Peek at the file size to allow pre-allocation.
-    long contentSize = static_cast<long>(getFileSize(app.filename.c_str()));
-    if (contentSize <= 0) {
-        std::cerr << "Unable to open " << app.filename << std::endl;
+    // Reset the pipeline to free memory.
+    delete app.flattener;
+    app.flattener = new gltfio::AssetPipeline();
+
+    gltfio::AssetPipeline::AssetHandle handle = app.flattener->load(app.filename);
+    if (!handle) {
+        puts("Unable to load model");
         exit(1);
     }
 
-    // Consume the glTF file.
-    std::ifstream in(app.filename.c_str(), std::ifstream::in);
-    std::vector<uint8_t> buffer(static_cast<unsigned long>(contentSize));
-    if (!in.read((char*) buffer.data(), contentSize)) {
-        std::cerr << "Unable to read " << app.filename << std::endl;
-        exit(1);
+    if (!gltfio::AssetPipeline::isFlattened(handle)) {
+        handle = app.flattener->flatten(handle);
+        if (!handle) {
+            puts("Unable to flatten model");
+            exit(1);
+        }
     }
 
-    // Parse the glTF file and create Filament entities.
-    app.asset = app.loader->createAssetFromJson(buffer.data(), buffer.size());
-    buffer.clear();
-    buffer.shrink_to_fit();
-
-    if (!app.asset) {
-        std::cerr << "Unable to parse " << app.filename << std::endl;
-        exit(1);
-    }
+    app.asset = app.loader->createAssetFromHandle(handle);
+    assert(app.asset);
 
     // Load external textures and buffers.
     gltfio::ResourceLoader({
@@ -359,19 +356,6 @@ static void prepAsset(App& app) {
             flags |= gltfio::AssetPipeline::SCALE_TO_UNIT;
         }
         gltfio::AssetPipeline pipeline;
-
-        {
-            app.statusText = std::make_shared<std::string>("Flattening");
-            asset = pipeline.flatten(asset, flags);
-            app.statusText.reset();
-        }
-
-        if (!asset) {
-            app.messageBoxText = std::make_shared<std::string>("Unable to flatten model");
-            app.pushedState = LOADED;
-            app.requestStatePop = true;
-            return;
-        }
 
         {
             app.statusText = std::make_shared<std::string>("Parameterizing");
@@ -436,7 +420,7 @@ static void renderAsset(App& app) {
     tcm.setParent(cam, {});
     tcm.setTransform(root, prev);
 
-    app.pipeline = new gltfio::AssetPipeline();
+    app.baker = new gltfio::AssetPipeline();
 
     // Finally, set up some callbacks and invoke the path tracer.
 
@@ -449,9 +433,10 @@ static void renderAsset(App& app) {
         App* app = (App*) userData;
         app->requestStatePop = true;
         app->requestOverlayUpdate = true;
-        delete app->pipeline;
+        delete app->baker;
+        app->baker = nullptr;
     };
-    app.pipeline->renderAmbientOcclusion(asset, app.ambientOcclusion, camera, onRenderTile,
+    app.baker->renderAmbientOcclusion(asset, app.ambientOcclusion, camera, onRenderTile,
             onRenderDone, &app);
 }
 
@@ -483,7 +468,7 @@ static void bakeAsset(App& app) {
     app.ambientOcclusion = image::LinearImage(res, res, 1);
     createOverlayTexture(app);
 
-    app.pipeline = new gltfio::AssetPipeline();
+    app.baker = new gltfio::AssetPipeline();
 
     using filament::math::ushort2;
     auto onRenderTile = [](ushort2, ushort2, void* userData) {
@@ -522,12 +507,12 @@ static void bakeAsset(App& app) {
 #else
     auto onRenderDone = [](void* userData) {
         App* app = (App*) userData;
-        delete app->pipeline;
+        delete app->baker;
+        app->baker = nullptr;
         app->requestOverlayUpdate = true;
         app->state = BAKED;
     };
-    app.pipeline->bakeAmbientOcclusion(asset, app.ambientOcclusion, onRenderTile, onRenderDone,
-            &app);
+    app.baker->bakeAmbientOcclusion(asset, app.ambientOcclusion, onRenderTile, onRenderDone, &app);
 #endif
 }
 
@@ -627,13 +612,13 @@ int main(int argc, char** argv) {
             ImGui::Spacing();
             ImGui::BeginGroup();
 
-            // Prep action (flattening and parameterizing).
+            // Prep action (parameterizing).
             const bool canPrep = app.state == LOADED;
             if (ImGui::Button("Prep", ImVec2(100, 50)) && canPrep) {
                 prepAsset(app);
             }
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Flattens the asset and generates a new set of UV coordinates.");
+                ImGui::SetTooltip("Generates a new set of UV coordinates.");
             }
 
             // Render action (invokes path tracer).
