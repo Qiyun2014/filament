@@ -58,8 +58,8 @@ enum AppState {
     EMPTY,
     LOADED,
     RENDERING,
-    PREPPING,
-    PREPPED,
+    PARAMETRIZING,
+    PARAMETRIZED,
     BAKING,
     BAKED,
     EXPORTED,
@@ -334,7 +334,7 @@ static void loadAsset(App& app) {
 
     // Load animation data then free the source hierarchy.
     app.asset->getAnimator();
-    app.state = AssetPipeline::isParameterized(app.asset->getSourceAsset()) ? PREPPED : LOADED;
+    app.state = AssetPipeline::isParameterized(app.asset->getSourceAsset()) ? PARAMETRIZED : LOADED;
 
     // Destroy the old asset and add the renderables to the scene.
     app.viewer->setAsset(app.asset, app.names, !app.actualSize);
@@ -344,8 +344,8 @@ static void loadAsset(App& app) {
     FilamentApp::get().setWindowTitle(app.filename.getName().c_str());
 }
 
-static void prepAsset(App& app) {
-    app.state = PREPPING;
+static void parameterizeAsset(App& app) {
+    app.state = PARAMETRIZING;
 
     utils::JobSystem* js = utils::JobSystem::getJobSystem();
     utils::JobSystem::Job* parent = js->createJob();
@@ -381,7 +381,7 @@ static void prepAsset(App& app) {
         app.filename = outPath;
         loadAsset(app);
 
-        app.pushedState = PREPPED;
+        app.pushedState = PARAMETRIZED;
         app.requestStatePop = true;
     });
     js->run(prep);
@@ -612,37 +612,27 @@ int main(int argc, char** argv) {
             ImGui::Spacing();
             ImGui::BeginGroup();
 
-            // Prep action (parameterizing).
-            const bool canPrep = app.state == LOADED;
-            if (ImGui::Button("Prep", ImVec2(100, 50)) && canPrep) {
-                prepAsset(app);
-            }
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Generates a new set of UV coordinates.");
-            }
-
-            // Render action (invokes path tracer).
-            #ifdef FILAMENT_HAS_EMBREE
-            const bool canRender = app.state == PREPPED;
-            #else
-            const bool canRender = false;
-            #endif
-            ImGui::SameLine();
-            if (ImGui::Button("Render", ImVec2(100, 50)) && canRender) {
+            // Test render action (invokes path tracer).
+            if (ImGui::Button("Test Render", ImVec2(100, 50))) {
                 renderAsset(app);
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Renders the asset using a pathtracer.");
             }
 
-            // Bake action (invokes path tracer).
-            #ifdef FILAMENT_HAS_EMBREE
-            const bool canBake = app.state == PREPPED;
-            #else
-            const bool canBake = false;
-            #endif
+            // Parameterize action.
             ImGui::SameLine();
-            if (ImGui::Button("Bake", ImVec2(100, 50)) && canBake) {
+            if (ImGui::Button("Parameterize", ImVec2(100, 50))) {
+                parameterizeAsset(app);
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Generates a new set of UV coordinates.");
+            }
+
+            // Bake action (invokes path tracer).
+            const bool canBake = app.state == PARAMETRIZED;
+            ImGui::SameLine();
+            if (ImGui::Button("Bake AO", ImVec2(100, 50)) && canBake) {
                 bakeAsset(app);
             }
             if (ImGui::IsItemHovered()) {
@@ -673,9 +663,7 @@ int main(int argc, char** argv) {
             if (app.ambientOcclusion) {
                 ImGui::Checkbox("Show embree result", &app.showOverlay);
             }
-            if (canPrep) {
-                ImGui::Checkbox("Auto-scale before parameterization", &app.enablePrepScale);
-            }
+            ImGui::Checkbox("Auto-scale before parameterization", &app.enablePrepScale);
             if (canBake) {
                 static const int kFirstOption = std::log2(512);
                 int bakeOption = std::log2(app.bakeResolution) - kFirstOption;
