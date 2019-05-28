@@ -125,7 +125,8 @@ private:
     cgltf_data* xatlasToCgltf(const cgltf_data* source, const xatlas::Atlas* atlas);
 
     // Convert a flattened cgltf asset into a PathTracer scene (i.e. an array of SimpleMesh).
-    void cgltfToSimpleMesh(const cgltf_data* sourceAsset, SimpleMesh** meshes, size_t* numMeshes);
+    void cgltfToSimpleMesh(const cgltf_data* sourceAsset, SimpleMesh** meshes, size_t* numMeshes,
+            bool provideDummyTexCoords = false);
 
     uint32_t mFlattenFlags;
     vector<cgltf_data*> mSourceAssets;
@@ -757,7 +758,7 @@ void Pipeline::renderAmbientOcclusion(const cgltf_data* sourceAsset, image::Line
         filament::rays::DoneCallback onDone, void* userData) {
     SimpleMesh* meshes;
     size_t numMeshes;
-    cgltfToSimpleMesh(sourceAsset, &meshes, &numMeshes);
+    cgltfToSimpleMesh(sourceAsset, &meshes, &numMeshes, true);
 
     filament::rays::PathTracer::Builder builder;
     builder
@@ -1174,7 +1175,7 @@ cgltf_data* Pipeline::xatlasToCgltf(const cgltf_data* sourceAsset, const xatlas:
 }
 
 void Pipeline::cgltfToSimpleMesh(const cgltf_data* sourceAsset, SimpleMesh** meshes,
-        size_t* numMeshes) {
+        size_t* numMeshes, bool provideDummyTexCoords) {
     *numMeshes = sourceAsset->scene->nodes_count;
     *meshes = mStorage.simpleMeshes.alloc(sourceAsset->scene->nodes_count);
 
@@ -1195,6 +1196,10 @@ void Pipeline::cgltfToSimpleMesh(const cgltf_data* sourceAsset, SimpleMesh** mes
             } else if (attr.type == cgltf_attribute_type_normal && attr.index == 0) {
                 normals = attr.data;
             }
+        }
+
+        if (!texcoords && provideDummyTexCoords) {
+            texcoords = positions;
         }
 
         // Allocate space for embree vertex data, then populate it.
