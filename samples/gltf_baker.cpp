@@ -343,6 +343,8 @@ static void loadAsset(App& app) {
     app.viewer->setAsset(app.asset, app.names, !app.actualSize);
 
     app.viewer->setIndirectLight(FilamentApp::get().getIBL()->getIndirectLight());
+
+    FilamentApp::get().setWindowTitle(app.filename.getName().c_str());
 }
 
 static void prepAsset(App& app) {
@@ -615,19 +617,24 @@ int main(int argc, char** argv) {
 
         app.viewer->setUiCallback([&app, scene] () {
             const ImVec4 disabled = ImGui::GetStyle().Colors[ImGuiCol_TextDisabled];
-            const ImVec4 enabled = ImGui::GetStyle().Colors[ImGuiCol_Text];
+            const ImVec4 hovered = ImGui::GetStyle().Colors[ImGuiCol_ButtonHovered];
+            const ImVec4 enabled = ImVec4(0.5, 0.5, 0.0, 1.0);
             ImGui::GetStyle().FrameRounding = 5;
+
+            ImGui::PushStyleColor(ImGuiCol_Button, enabled);
+
+            ImGui::Spacing();
+            ImGui::Spacing();
+            ImGui::BeginGroup();
 
             // Prep action (flattening and parameterizing).
             const bool canPrep = app.state == LOADED;
-            ImGui::PushStyleColor(ImGuiCol_Text, canPrep ? enabled : disabled);
             if (ImGui::Button("Prep", ImVec2(100, 50)) && canPrep) {
                 prepAsset(app);
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Flattens the asset and generates a new set of UV coordinates.");
             }
-            ImGui::PopStyleColor();
 
             // Render action (invokes path tracer).
             #ifdef FILAMENT_HAS_EMBREE
@@ -635,14 +642,13 @@ int main(int argc, char** argv) {
             #else
             const bool canRender = false;
             #endif
-            ImGui::PushStyleColor(ImGuiCol_Text, canRender ? enabled : disabled);
+            ImGui::SameLine();
             if (ImGui::Button("Render", ImVec2(100, 50)) && canRender) {
                 renderAsset(app);
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Renders the asset using a pathtracer.");
             }
-            ImGui::PopStyleColor();
 
             // Bake action (invokes path tracer).
             #ifdef FILAMENT_HAS_EMBREE
@@ -650,18 +656,19 @@ int main(int argc, char** argv) {
             #else
             const bool canBake = false;
             #endif
-            ImGui::PushStyleColor(ImGuiCol_Text, canBake ? enabled : disabled);
+            ImGui::SameLine();
             if (ImGui::Button("Bake", ImVec2(100, 50)) && canBake) {
                 bakeAsset(app);
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Invokes an embree-based pathtracer.");
             }
-            ImGui::PopStyleColor();
 
             // Export action
             const bool canExport = app.state == BAKED;
-            ImGui::PushStyleColor(ImGuiCol_Text, canExport ? enabled : disabled);
+            ImGui::PushStyleColor(ImGuiCol_Button, canExport ? enabled : disabled);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, canExport ? hovered : disabled);
+            ImGui::SameLine();
             if (ImGui::Button("Export...", ImVec2(100, 50)) && canExport) {
                 ImGui::OpenPopup("Export options");
             }
@@ -669,7 +676,13 @@ int main(int argc, char** argv) {
                 ImGui::SetTooltip("Saves the baked result to disk.");
             }
             ImGui::PopStyleColor();
+            ImGui::PopStyleColor();
             ImGui::GetStyle().FrameRounding = 20;
+
+            ImGui::EndGroup();
+            ImGui::PopStyleColor();
+            ImGui::Spacing();
+            ImGui::Spacing();
 
             // Options
             if (app.ambientOcclusion) {
