@@ -104,6 +104,7 @@ private:
 
     PostProcessMaterial mSSAO;
     PostProcessMaterial mMipmapDepth;
+    PostProcessMaterial mBlur;
 
     backend::Handle<backend::HwTexture> mNoSSAOTexture;
 };

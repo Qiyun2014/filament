@@ -86,6 +86,7 @@ void PostProcessManager::init() noexcept {
 
     mSSAO = PostProcessMaterial(mEngine, MATERIALS_SAO_DATA, MATERIALS_SAO_SIZE);
     mMipmapDepth = PostProcessMaterial(mEngine, MATERIALS_MIPMAPDEPTH_DATA, MATERIALS_MIPMAPDEPTH_SIZE);
+    mBlur = PostProcessMaterial(mEngine, MATERIALS_BLUR_DATA, MATERIALS_BLUR_SIZE);
 
     // create sampler for post-process FBO
     DriverApi& driver = mEngine.getDriverApi();
@@ -374,7 +375,7 @@ FrameGraphResource PostProcessManager::ssao(FrameGraph& fg, RenderPass& pass,
             FrameGraphResource out;
         };
 
-        auto& depthMipmappass = fg.addPass<DepthMipData>("Depth Mipmap Pass",
+        auto& depthMipmapPass = fg.addPass<DepthMipData>("Depth Mipmap Pass",
                 [depth, level](FrameGraph::Builder& builder, DepthMipData& data) {
                     const char* name = builder.getName(depth);
                     data.in = builder.useRenderTarget(name, {
@@ -407,7 +408,7 @@ FrameGraphResource PostProcessManager::ssao(FrameGraph& fg, RenderPass& pass,
                     driver.endRenderPass();
                 });
 
-        depth = depthMipmappass.getData().out;
+        depth = depthMipmapPass.getData().out;
     }
 
     struct SSAOPassData {
@@ -463,7 +464,99 @@ FrameGraphResource PostProcessManager::ssao(FrameGraph& fg, RenderPass& pass,
                 driver.endRenderPass();
             });
 
-    return SSAOPass.getData().ssao;
+    FrameGraphResource ssao = SSAOPass.getData().ssao;
+
+
+    struct BlurPassData {
+        FrameGraphResource ssao;
+        FrameGraphResource blurred;
+    };
+
+    auto& blurPassX = fg.addPass<BlurPassData>("Blur Pass",
+            [depth, ssao](FrameGraph::Builder& builder, BlurPassData& data) {
+
+                auto const& desc = builder.getDescriptor(ssao);
+
+                data.ssao = builder.read(ssao);
+
+                data.blurred = builder.createTexture("Blured SSAO Buffer", {
+                        .width = desc.width, .height = desc.height,
+                        .format = TextureFormat::R8 });
+
+                data.blurred = builder.useRenderTarget("Blured SSAO Target",
+                        { .attachments.color = { data.blurred, FrameGraphRenderTarget::Attachments::WRITE },
+                          .attachments.depth = { depth, FrameGraphRenderTarget::Attachments::READ }
+                        }, TargetBufferFlags::NONE).color;
+            },
+            [this, fullScreenRenderPrimitive](FrameGraphPassResources const& resources,
+                    BlurPassData const& data, DriverApi& driver) {
+                auto ssao = resources.getTexture(data.ssao);
+                auto blured = resources.getRenderTarget(data.blurred);
+                auto const& desc = resources.getDescriptor(data.blurred);
+
+                SamplerParams params;
+                FMaterialInstance* const pInstance = mBlur.getMaterialInstance();
+                pInstance->setParameter("ssao", ssao, params);
+                pInstance->setParameter("axis", int2{1, 0});
+                pInstance->setParameter("resolution",
+                        float4{ desc.width, desc.height, 1.0f / desc.width, 1.0f / desc.height });
+                pInstance->commit(driver);
+                pInstance->use(driver);
+
+                PipelineState pipeline;
+                pipeline.program = mBlur.getProgram();
+                pipeline.rasterState = mBlur.getMaterial()->getRasterState();
+                pipeline.rasterState.depthFunc = RasterState::DepthFunc::G;
+
+                driver.beginRenderPass(blured.target, blured.params);
+                driver.draw(pipeline, fullScreenRenderPrimitive);
+                driver.endRenderPass();
+            });
+
+
+    auto& blurPassY = fg.addPass<BlurPassData>("Blur Pass",
+            [depth, ssao = blurPassX.getData().blurred](FrameGraph::Builder& builder, BlurPassData& data) {
+
+                auto const& desc = builder.getDescriptor(ssao);
+
+                data.ssao = builder.read(ssao);
+
+                data.blurred = builder.createTexture("Blured SSAO Buffer", {
+                        .width = desc.width, .height = desc.height,
+                        .format = TextureFormat::R8 });
+
+                data.blurred = builder.useRenderTarget("Blured SSAO Target",
+                        { .attachments.color = { data.blurred, FrameGraphRenderTarget::Attachments::WRITE },
+                                .attachments.depth = { depth, FrameGraphRenderTarget::Attachments::READ }
+                        }, TargetBufferFlags::NONE).color;
+            },
+            [this, fullScreenRenderPrimitive](FrameGraphPassResources const& resources,
+                    BlurPassData const& data, DriverApi& driver) {
+                auto ssao = resources.getTexture(data.ssao);
+                auto blured = resources.getRenderTarget(data.blurred);
+                auto const& desc = resources.getDescriptor(data.blurred);
+
+                SamplerParams params;
+                FMaterialInstance* const pInstance = mBlur.getMaterialInstance();
+                pInstance->setParameter("ssao", ssao, params);
+                pInstance->setParameter("axis", int2{0, 1});
+                pInstance->setParameter("resolution",
+                        float4{ desc.width, desc.height, 1.0f / desc.width, 1.0f / desc.height });
+                pInstance->commit(driver);
+                pInstance->use(driver);
+
+                PipelineState pipeline;
+                pipeline.program = mBlur.getProgram();
+                pipeline.rasterState = mBlur.getMaterial()->getRasterState();
+                pipeline.rasterState.depthFunc = RasterState::DepthFunc::G;
+
+                driver.beginRenderPass(blured.target, blured.params);
+                driver.draw(pipeline, fullScreenRenderPrimitive);
+                driver.endRenderPass();
+            });
+
+
+    return blurPassY.getData().blurred;
 }
 
 } // namespace filament

@@ -1,0 +1,60 @@
+material {
+    name : blur,
+    parameters : [
+        {
+            type : sampler2d,
+            name : ssao,
+            precision: high
+        },
+        {
+            type : float4,
+            name : resolution
+        },
+        {
+            type : int2,
+            name : axis
+        }
+    ],
+    variables : [
+        vertex
+    ],
+    vertexDomain : device,
+    depthWrite : false,
+    depthCulling : true,
+    shadingModel : unlit,
+    variantFilter : [ skinning ],
+    culling: none
+}
+
+vertex {
+    void materialVertex(inout MaterialVertexInputs material) {
+        // far-plane in view space
+        vec4 position = getPosition(); // clip-space
+        position.z = 1.0; // far plane
+        material.vertex.xy = (position.xy * 0.5 + 0.5);
+        material.vertex.zw = position.xy;
+    }
+}
+
+fragment {
+    const int kRadius = 4;
+    const int kGaussianCount = kRadius + 1;
+    const float kGaussianSamples[kGaussianCount] = float[](
+        0.153170, 0.144893, 0.122649, 0.092902, 0.062970
+    );
+
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+
+        ivec2 uv = ivec2(variable_vertex.xy * materialParams.resolution.xy);
+        vec2 sum = vec2(0);
+        for (int i = -kRadius ; i <= kRadius ; i++) {
+            ivec2 p = uv + i * materialParams.axis;
+            float ao = texelFetch(materialParams_ssao, p, 0).r;
+            float g = kGaussianSamples[abs(i)];
+            sum += vec2(ao * g, g);
+        }
+
+        material.baseColor.r = sum.x * (1.0 / sum.y);
+    }
+}
