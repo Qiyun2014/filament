@@ -39,12 +39,56 @@ using namespace math;
 using namespace backend;
 using namespace filament::details;
 
-void PostProcessManager::init(FEngine& engine) noexcept {
-    mEngine = &engine;
+// ------------------------------------------------------------------------------------------------
+
+PostProcessManager::PostProcessMaterial::PostProcessMaterial(FEngine& engine,
+        uint8_t const* data, size_t size) noexcept {
+    mMaterial = upcast(Material::Builder().package(data, size).build(engine));
+    mMaterialInstance = mMaterial->getDefaultInstance();
+    mProgram = mMaterial->getProgram(0);
+}
+
+PostProcessManager::PostProcessMaterial::PostProcessMaterial(
+        PostProcessManager::PostProcessMaterial&& rhs) noexcept {
+    using namespace std;
+    swap(mMaterial, rhs.mMaterial);
+    swap(mMaterialInstance, rhs.mMaterialInstance);
+    swap(mProgram, rhs.mProgram);
+}
+
+PostProcessManager::PostProcessMaterial& PostProcessManager::PostProcessMaterial::operator=(
+        PostProcessManager::PostProcessMaterial&& rhs) noexcept {
+    using namespace std;
+    swap(mMaterial, rhs.mMaterial);
+    swap(mMaterialInstance, rhs.mMaterialInstance);
+    swap(mProgram, rhs.mProgram);
+    return *this;
+}
+
+PostProcessManager::PostProcessMaterial::~PostProcessMaterial() {
+    assert(mMaterial == nullptr);
+}
+
+void PostProcessManager::PostProcessMaterial::terminate(FEngine& engine) noexcept {
+    engine.destroy(mMaterial);
+    mMaterial = nullptr;
+    mMaterialInstance = nullptr;
+    mProgram.clear();
+}
+
+// ------------------------------------------------------------------------------------------------
+
+PostProcessManager::PostProcessManager(FEngine& engine) noexcept : mEngine(engine) {
+}
+
+void PostProcessManager::init() noexcept {
     mPostProcessUb = UniformBuffer(PostProcessingUib::getUib().getSize());
 
+    mSSAO = PostProcessMaterial(mEngine, MATERIALS_SAO_DATA, MATERIALS_SAO_SIZE);
+    mMipmapDepth = PostProcessMaterial(mEngine, MATERIALS_MIPMAPDEPTH_DATA, MATERIALS_MIPMAPDEPTH_SIZE);
+
     // create sampler for post-process FBO
-    DriverApi& driver = engine.getDriverApi();
+    DriverApi& driver = mEngine.getDriverApi();
     mPostProcessSbh = driver.createSamplerGroup(PostProcessSib::SAMPLER_COUNT);
     mPostProcessUbh = driver.createUniformBuffer(mPostProcessUb.getSize(),
             backend::BufferUsage::DYNAMIC);
@@ -59,31 +103,21 @@ void PostProcessManager::init(FEngine& engine) noexcept {
     auto p = static_cast<uint8_t *>(data.buffer);
     *p = 0xFFu;
     driver.update2DImage(mNoSSAOTexture, 0, 0, 0, 1, 1, std::move(data));
-
-    mSSAOMaterial = upcast(Material::Builder().package(
-            MATERIALS_SAO_DATA, MATERIALS_SAO_SIZE).build(engine));
-    mSSAOMaterialInstance = mSSAOMaterial->getDefaultInstance();
-    mSSAOProgram = mSSAOMaterial->getProgram(0);
-
-    mMipmapDepthMaterial = upcast(Material::Builder().package(
-            MATERIALS_MIPMAPDEPTH_DATA, MATERIALS_MIPMAPDEPTH_SIZE).build(engine));
-    mMipmapDepthMaterialInstance = mMipmapDepthMaterial->getDefaultInstance();
-    mMipmapDepthProgram = mMipmapDepthMaterial->getProgram(0);
 }
 
 void PostProcessManager::terminate(backend::DriverApi& driver) noexcept {
-    FEngine* const pEngine = mEngine;
     driver.destroySamplerGroup(mPostProcessSbh);
     driver.destroyUniformBuffer(mPostProcessUbh);
     driver.destroyTexture(mNoSSAOTexture);
-    pEngine->destroy(mSSAOMaterial);
+    mSSAO.terminate(mEngine);
+    mMipmapDepth.terminate(mEngine);
 }
 
 void PostProcessManager::setSource(uint32_t viewportWidth, uint32_t viewportHeight,
         backend::Handle<backend::HwTexture> color,
         backend::Handle<backend::HwTexture> depth,
         uint32_t textureWidth, uint32_t textureHeight) const noexcept {
-    FEngine& engine = *mEngine;
+    FEngine& engine = mEngine;
     DriverApi& driver = engine.getDriverApi();
 
     // FXAA requires linear filtering. The post-processing stage however, doesn't
@@ -118,14 +152,14 @@ void PostProcessManager::setSource(uint32_t viewportWidth, uint32_t viewportHeig
 FrameGraphResource PostProcessManager::toneMapping(FrameGraph& fg, FrameGraphResource input,
         backend::TextureFormat outFormat, bool dithering, bool translucent) noexcept {
 
-    FEngine* engine = mEngine;
-    backend::Handle<backend::HwRenderPrimitive> const& fullScreenRenderPrimitive = engine->getFullScreenRenderPrimitive();
+    FEngine& engine = mEngine;
+    backend::Handle<backend::HwRenderPrimitive> const& fullScreenRenderPrimitive = engine.getFullScreenRenderPrimitive();
 
     struct PostProcessToneMapping {
         FrameGraphResource input;
         FrameGraphResource output;
     };
-    backend::Handle<backend::HwProgram> toneMappingProgram = engine->getPostProcessProgram(
+    backend::Handle<backend::HwProgram> toneMappingProgram = engine.getPostProcessProgram(
             translucent ? PostProcessStage::TONE_MAPPING_TRANSLUCENT
                         : PostProcessStage::TONE_MAPPING_OPAQUE);
 
@@ -173,15 +207,15 @@ FrameGraphResource PostProcessManager::toneMapping(FrameGraph& fg, FrameGraphRes
 FrameGraphResource PostProcessManager::fxaa(FrameGraph& fg,
         FrameGraphResource input, backend::TextureFormat outFormat, bool translucent) noexcept {
 
-    FEngine* engine = mEngine;
-    backend::Handle<backend::HwRenderPrimitive> const& fullScreenRenderPrimitive = engine->getFullScreenRenderPrimitive();
+    FEngine& engine = mEngine;
+    backend::Handle<backend::HwRenderPrimitive> const& fullScreenRenderPrimitive = engine.getFullScreenRenderPrimitive();
 
     struct PostProcessFXAA {
         FrameGraphResource input;
         FrameGraphResource output;
     };
 
-    backend::Handle<backend::HwProgram> antiAliasingProgram = engine->getPostProcessProgram(
+    backend::Handle<backend::HwProgram> antiAliasingProgram = engine.getPostProcessProgram(
             translucent ? PostProcessStage::ANTI_ALIASING_TRANSLUCENT
                         : PostProcessStage::ANTI_ALIASING_OPAQUE);
 
@@ -299,8 +333,8 @@ FrameGraphResource PostProcessManager::dynamicScaling(FrameGraph& fg,
 FrameGraphResource PostProcessManager::ssao(FrameGraph& fg, RenderPass& pass,
         filament::Viewport const& svp, View::AmbientOcclusionOptions const& options) noexcept {
 
-    FEngine* engine = mEngine;
-    Handle<HwRenderPrimitive> fullScreenRenderPrimitive = engine->getFullScreenRenderPrimitive();
+    FEngine& engine = mEngine;
+    Handle<HwRenderPrimitive> fullScreenRenderPrimitive = engine.getFullScreenRenderPrimitive();
 
     // SSAO depth pass -- automatically culled if not used
     struct DepthPassData {
@@ -358,15 +392,15 @@ FrameGraphResource PostProcessManager::ssao(FrameGraph& fg, RenderPass& pass,
                     auto out = resources.getRenderTarget(data.out, level + 1u);
 
                     SamplerParams params;
-                    FMaterialInstance* const pInstance = mMipmapDepthMaterialInstance;
+                    FMaterialInstance* const pInstance = mMipmapDepth.getMaterialInstance();
                     pInstance->setParameter("depth", in, params);
                     pInstance->setParameter("level", uint32_t(level));
                     pInstance->commit(driver);
                     pInstance->use(driver);
 
                     PipelineState pipeline;
-                    pipeline.program = mMipmapDepthProgram;
-                    pipeline.rasterState = mMipmapDepthMaterial->getRasterState();
+                    pipeline.program = mMipmapDepth.getProgram();
+                    pipeline.rasterState = mMipmapDepth.getMaterial()->getRasterState();
 
                     driver.beginRenderPass(out.target, out.params);
                     driver.draw(pipeline, fullScreenRenderPrimitive);
@@ -406,7 +440,7 @@ FrameGraphResource PostProcessManager::ssao(FrameGraph& fg, RenderPass& pass,
                 auto const& desc = resources.getDescriptor(data.ssao);
 
                 SamplerParams params;
-                FMaterialInstance* const pInstance = mSSAOMaterialInstance;
+                FMaterialInstance* const pInstance = mSSAO.getMaterialInstance();
                 pInstance->setParameter("depth", depth, params);
                 pInstance->setParameter("resolution",
                         float4{ desc.width, desc.height, 1.0f / desc.width, 1.0f / desc.height });
@@ -420,8 +454,8 @@ FrameGraphResource PostProcessManager::ssao(FrameGraph& fg, RenderPass& pass,
                 pInstance->use(driver);
 
                 PipelineState pipeline;
-                pipeline.program = mSSAOProgram;
-                pipeline.rasterState = mSSAOMaterial->getRasterState();
+                pipeline.program = mSSAO.getProgram();
+                pipeline.rasterState = mSSAO.getMaterial()->getRasterState();
                 pipeline.rasterState.depthFunc = RasterState::DepthFunc::G;
 
                 driver.beginRenderPass(ssao.target, ssao.params);
